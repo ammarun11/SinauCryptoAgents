@@ -23,6 +23,7 @@ from cryptoagents.config import CRYPTO_CONFIG
 from cli.models import AnalystType
 from cli.utils import *
 from cli.pdf_generator import generate_trading_report_pdf
+from cryptoagents.dataflows.coinmarketcap_utils import CoinMarketCapAPI, get_crypto_price_data
 
 console = Console()
 
@@ -695,7 +696,35 @@ def update_research_team_status(status):
         message_buffer.update_agent_status(agent, status)
 
 
-def run_analysis():
+def get_summary_table(ticker: str, portfolio_usd: float = 200.0):
+    """
+    Generate a summary table for daily trading action for a given crypto.
+    """
+    from datetime import datetime, timedelta
+    api = CoinMarketCapAPI()
+    # Get current price
+    quote = api.get_latest_quote([ticker])
+    try:
+        price = float(
+            quote['data'][str(api.get_crypto_id(ticker))]['quote']['USD']['price']
+        )
+    except Exception:
+        price = None
+    # Example logic for buy/sell/hold (can be improved with more signals)
+    # For now, use a simple placeholder logic
+    buy_price = price * 0.9 if price else None
+    sell_price = price * 1.1 if price else None
+    table = f"""
+| Action | Price Trigger (USD) | Amount (USD) | Condition/Note |
+|--------|--------------------|--------------|----------------|
+| Buy    | {buy_price:.8f}    | {portfolio_usd*0.2:.2f}   | If price dips 10% below current |
+| Sell   | {sell_price:.8f}   | {portfolio_usd*0.5:.2f}   | If price surges 10% above current |
+| Hold   | {price:.8f}        | {portfolio_usd:.2f}   | Default/No strong signal |
+""" if price else "Price unavailable."
+    return table
+
+
+def run_analysis(portfolio_usd: float = 200.0):
     # First get all user selections
     selections = get_user_selections()
 
@@ -1026,6 +1055,14 @@ def run_analysis():
             message_buffer.add_message("Error", f"Report generation failed: {str(e)}")
             console.print(f"\n[red]✗ Report Generation Failed:[/red] {str(e)}")
 
+        # After generating the final report, prepend the summary table (so it appears at the top)
+        summary_table = get_summary_table(selections['ticker'], portfolio_usd=portfolio_usd)
+        if message_buffer.final_report:
+            message_buffer.final_report = summary_table + "\n" + message_buffer.final_report
+            # Write the summary table to a separate markdown file
+            summary_filename = f"reports/{selections['ticker'].upper()}_{selections['analysis_date']}_summary.md"
+            with open(summary_filename, "w") as f:
+                f.write(summary_table)
         update_display(layout)
 
 
@@ -1036,9 +1073,9 @@ def main():
 
 
 @app.command()
-def analyze():
+def analyze(portfolio_usd: float = typer.Option(200.0, help="Portfolio value in USD for trading recommendations.")):
     """Run cryptocurrency analysis with the trading desk simulation."""
-    run_analysis()
+    run_analysis(portfolio_usd=portfolio_usd)
 
 
 if __name__ == "__main__":

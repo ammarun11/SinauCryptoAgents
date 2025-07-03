@@ -109,18 +109,26 @@ The easiest way to use CryptoAgents is through the interactive CLI:
 
 ```bash
 # Run the interactive CLI
-python cli/main.py analyze
+python cli/main.py analyze --portfolio-usd 1000
 
 # Or simply
-python -m cli.main analyze
+python -m cli.main analyze --portfolio-usd 1000
 ```
 
-The CLI provides:
-- **Step-by-step configuration**: Symbol selection, analysis date, team selection
-- **Real-time monitoring**: Live progress tracking of all agents
-- **Rich terminal interface**: Beautiful formatted reports and status updates
-- **Configurable analysis depth**: Choose from Shallow/Medium/Deep research levels
-- **Model selection**: Pick different LLM engines for quick vs deep thinking
+#### Portfolio Value Option
+- Use the `--portfolio-usd` option to specify your portfolio value in USD. This value is used to generate actionable trading recommendations (buy/sell/hold, price triggers, amounts, and conditions) in the summary table at the top of the report.
+- The summary table is also saved as a separate Markdown file in the `reports/` directory (e.g., `BTC_2025-07-03_summary.md`).
+
+#### Example Summary Table Output
+```
+| Action | Price Trigger (USD) | Amount (USD) | Condition/Note |
+|--------|--------------------|--------------|----------------|
+| Buy    | 54321.00000000     | 200.00       | If price dips 10% below current |
+| Sell   | 65432.10000000     | 500.00       | If price surges 10% above current |
+| Hold   | 60392.00000000     | 1000.00      | Default/No strong signal |
+```
+
+The summary table will appear at the top of the main report and in a separate Markdown file for easy reference.
 
 ### Programmatic Usage
 

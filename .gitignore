@@ -9,3 +9,10 @@ eval_data/
 reports/
 
 .env
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env.bak/
+venv.bak/
