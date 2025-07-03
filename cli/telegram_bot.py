@@ -232,7 +232,10 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"{summary_text}\n\n"
             if research_decision:
                 msg += research_decision
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            # Split and send in chunks if too long
+            max_len = 4096
+            for i in range(0, len(msg), max_len):
+                await update.message.reply_text(msg[i:i+max_len], parse_mode="Markdown")
         # Continue sending files as before
         if summary_path:
             with open(summary_path, "rb") as f:
