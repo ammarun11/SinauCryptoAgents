@@ -17,6 +17,7 @@ from rich.tree import Tree
 from rich import box
 from rich.align import Align
 from rich.rule import Rule
+import os
 
 from cryptoagents.graph.trading_graph import TradingAgentsGraph
 from cryptoagents.config import CRYPTO_CONFIG
@@ -455,6 +456,14 @@ def get_user_selections():
     selected_shallow_thinker = select_shallow_thinking_agent()
     selected_deep_thinker = select_deep_thinking_agent()
 
+    # Step 6: Fiat currency
+    console.print(
+        create_question_box(
+            "Step 6: Fiat Currency", "Select your fiat currency for trading"
+        )
+    )
+    selected_fiat_currency = select_fiat_currency()
+
     return {
         "ticker": selected_ticker,
         "analysis_date": analysis_date,
@@ -462,6 +471,7 @@ def get_user_selections():
         "research_depth": selected_research_depth,
         "shallow_thinker": selected_shallow_thinker,
         "deep_thinker": selected_deep_thinker,
+        "fiat_currency": selected_fiat_currency,
     }
 
 
@@ -696,30 +706,61 @@ def update_research_team_status(status):
         message_buffer.update_agent_status(agent, status)
 
 
-def get_summary_table(ticker: str, portfolio_usd: float = 200.0):
+def select_fiat_currency():
+    """Prompt user to select fiat currency (USD or IDR)."""
+    options = ["USD", "IDR"]
+    default = "IDR"
+    console.print("[cyan]Supported fiat currencies: USD (US Dollar), IDR (Rupiah)[/cyan]")
+    while True:
+        fiat = typer.prompt("Select fiat currency (USD/IDR)", default=default).upper()
+        if fiat in options:
+            return fiat
+        else:
+            console.print("[red]Invalid fiat currency. Please enter 'USD' or 'IDR'.[/red]")
+
+
+def get_summary_table(ticker: str, portfolio_usd: float = 200.0, fiat_currency: str = None):
     """
-    Generate a summary table for daily trading action for a given crypto.
+    Generate a summary trading table for the given ticker and portfolio value.
+    Now supports fiat_currency (USD or IDR).
     """
-    from datetime import datetime, timedelta
+    from cryptoagents.config import CRYPTO_CONFIG
+    fiat = fiat_currency or CRYPTO_CONFIG.get("fiat_currency", "USD")
+    currency_symbol = "$" if fiat == "USD" else "Rp"
+
     api = CoinMarketCapAPI()
     # Get current price
     quote = api.get_latest_quote([ticker])
     try:
-        price = float(
-            quote['data'][str(api.get_crypto_id(ticker))]['quote']['USD']['price']
-        )
+        if fiat == "IDR":
+            price = float(
+                quote['data'][str(api.get_crypto_id(ticker))]['quote']['IDR']['price']
+            )
+        else:
+            price = float(
+                quote['data'][str(api.get_crypto_id(ticker))]['quote']['USD']['price']
+            )
     except Exception:
         price = None
     # Example logic for buy/sell/hold (can be improved with more signals)
     # For now, use a simple placeholder logic
     buy_price = price * 0.9 if price else None
     sell_price = price * 1.1 if price else None
+
+    def fmt(val):
+        if val is None:
+            return "-"
+        if val < 1:
+            return f"{val:.8f}".rstrip("0").rstrip(".")  # up to 8 decimals, no currency symbol
+        else:
+            return f"{currency_symbol}{val:,.2f}"  # currency symbol and 2 decimals
+
     table = f"""
-| Action | Price Trigger (USD) | Amount (USD) | Condition/Note |
+| Action | Price Trigger ({fiat}) | Amount ({fiat}) | Condition/Note |
 |--------|--------------------|--------------|----------------|
-| Buy    | {buy_price:.8f}    | {portfolio_usd*0.2:.2f}   | If price dips 10% below current |
-| Sell   | {sell_price:.8f}   | {portfolio_usd*0.5:.2f}   | If price surges 10% above current |
-| Hold   | {price:.8f}        | {portfolio_usd:.2f}   | Default/No strong signal |
+| Buy    | {fmt(buy_price)}    | {currency_symbol}{portfolio_usd*0.2:,.2f}   | If price dips 10% below current |
+| Sell   | {fmt(sell_price)}   | {currency_symbol}{portfolio_usd*0.5:,.2f}   | If price surges 10% above current |
+| Hold   | {fmt(price)}        | {currency_symbol}{portfolio_usd:,.2f}   | Default/No strong signal |
 """ if price else "Price unavailable."
     return table
 
@@ -1056,7 +1097,7 @@ def run_analysis(portfolio_usd: float = 200.0):
             console.print(f"\n[red]✗ Report Generation Failed:[/red] {str(e)}")
 
         # After generating the final report, prepend the summary table (so it appears at the top)
-        summary_table = get_summary_table(selections['ticker'], portfolio_usd=portfolio_usd)
+        summary_table = get_summary_table(selections['ticker'], portfolio_usd=portfolio_usd, fiat_currency=selections.get('fiat_currency', 'USD'))
         if message_buffer.final_report:
             message_buffer.final_report = summary_table + "\n" + message_buffer.final_report
             # Write the summary table to a separate markdown file
@@ -1066,6 +1107,107 @@ def run_analysis(portfolio_usd: float = 200.0):
         update_display(layout)
 
 
+def run_analysis_headless(
+    ticker: str,
+    portfolio_usd: float,
+    analysis_date: str,
+    analysts=None,
+    research_depth=None,
+    shallow_model=None,
+    deep_model=None,
+    fiat_currency=None,
+    progress_callback=None  # <-- allow extra kwarg for bot compatibility
+):
+    """
+    Run the full agent analysis pipeline without user prompts. Returns (pdf_path, markdown_path, summary_path).
+    """
+    # Use defaults if not provided
+    if analysts is None:
+        analysts = [AnalystType.MARKET, AnalystType.SOCIAL, AnalystType.NEWS, AnalystType.FUNDAMENTALS]
+    else:
+        # Accept both AnalystType and string values
+        analysts = [a if isinstance(a, AnalystType) else AnalystType(a) for a in analysts]
+    if research_depth is None:
+        research_depth = 3
+    if shallow_model is None:
+        shallow_model = CRYPTO_CONFIG["quick_think_llm"]
+    if deep_model is None:
+        deep_model = CRYPTO_CONFIG["deep_think_llm"]
+
+    config = CRYPTO_CONFIG.copy()
+    config["max_debate_rounds"] = research_depth
+    config["max_risk_discuss_rounds"] = research_depth
+    config["quick_think_llm"] = shallow_model
+    config["deep_think_llm"] = deep_model
+
+    graph = TradingAgentsGraph(
+        [analyst.value for analyst in analysts], config=config, debug=False
+    )
+
+    # Initialize state and get graph args
+    init_agent_state = graph.propagator.create_initial_state(ticker, analysis_date)
+    args = graph.propagator.get_graph_args()
+
+    trace = []
+    for chunk in graph.graph.stream(init_agent_state, **args):
+        trace.append(chunk)
+        if progress_callback:
+            # Optionally call the callback with a simple progress message
+            agent = chunk.get('current_agent') or chunk.get('agent')
+            step = chunk.get('step') or chunk.get('stage')
+            msg = f"Step: {step or ''} | Agent: {agent or ''}"
+            progress_callback(msg)
+    if not trace:
+        raise RuntimeError("No analysis trace generated.")
+    final_state = trace[-1]
+    decision = graph.process_signal(final_state["final_trade_decision"])
+
+    # Build the final report
+    report_parts = []
+    if final_state.get("market_report"):
+        report_parts.append(f"### Crypto Market Analysis\n{final_state['market_report']}")
+    if final_state.get("sentiment_report"):
+        report_parts.append(f"### Crypto Social Sentiment\n{final_state['sentiment_report']}")
+    if final_state.get("news_report"):
+        report_parts.append(f"### Crypto News Analysis\n{final_state['news_report']}")
+    if final_state.get("fundamentals_report"):
+        report_parts.append(f"### Crypto Fundamentals Analysis\n{final_state['fundamentals_report']}")
+    if final_state.get("investment_plan"):
+        report_parts.append(f"## Research Team Decision\n{final_state['investment_plan']}")
+    if final_state.get("trader_investment_plan"):
+        report_parts.append(f"## Trading Team Plan\n{final_state['trader_investment_plan']}")
+    if final_state.get("final_trade_decision"):
+        report_parts.append(f"## Portfolio Management Decision\n{final_state['final_trade_decision']}")
+    final_report = "\n\n".join(report_parts)
+
+    # Generate summary table and prepend
+    summary_table = get_summary_table(ticker, portfolio_usd, fiat_currency=fiat_currency)
+    final_report_with_summary = summary_table + "\n" + final_report
+
+    # Write summary to markdown
+    summary_filename = f"reports/{ticker.upper()}_{analysis_date}_summary.md"
+    os.makedirs("reports", exist_ok=True)
+    with open(summary_filename, "w") as f:
+        f.write(summary_table)
+
+    # Write full report to markdown
+    markdown_filename = f"reports/{ticker.upper()}_{analysis_date}_report.md"
+    with open(markdown_filename, "w") as f:
+        f.write(final_report_with_summary)
+
+    # Optionally generate PDF (if function available)
+    try:
+        pdf_path, _ = generate_trading_report_pdf(
+            crypto_symbol=ticker,
+            analysis_date=analysis_date,
+            final_report=final_report_with_summary
+        )
+    except Exception:
+        pdf_path = None
+
+    return pdf_path, markdown_filename, summary_filename
+
+
 @app.callback()
 def main():
     """CryptoAgents CLI: Multi-Agents LLM Cryptocurrency Trading Framework"""
@@ -1073,9 +1215,14 @@ def main():
 
 
 @app.command()
-def analyze(portfolio_usd: float = typer.Option(200.0, help="Portfolio value in USD for trading recommendations.")):
+def analyze(
+    portfolio: float = typer.Option(
+        200.0,
+        help="Portfolio balance in selected fiat currency (e.g. 9700000 for IDR, 1000 for USD)."
+    )
+):
     """Run cryptocurrency analysis with the trading desk simulation."""
-    run_analysis(portfolio_usd=portfolio_usd)
+    run_analysis(portfolio_usd=portfolio)
 
 
 if __name__ == "__main__":

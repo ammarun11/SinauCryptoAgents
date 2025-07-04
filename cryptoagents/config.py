@@ -60,6 +60,9 @@ CRYPTO_CONFIG = {
     # Market hours (crypto trades 24/7)
     "market_hours": "24/7",
     "timezone": "UTC",
+    
+    # Fiat currency settings
+    "fiat_currency": os.environ.get("FIAT_CURRENCY", "USD"),  # Can be set to "IDR" for Rupiah
 }
 
 # Crypto-specific prompts and instructions
