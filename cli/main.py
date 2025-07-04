@@ -456,6 +456,14 @@ def get_user_selections():
     selected_shallow_thinker = select_shallow_thinking_agent()
     selected_deep_thinker = select_deep_thinking_agent()
 
+    # Step 6: Fiat currency
+    console.print(
+        create_question_box(
+            "Step 6: Fiat Currency", "Select your fiat currency for trading"
+        )
+    )
+    selected_fiat_currency = select_fiat_currency()
+
     return {
         "ticker": selected_ticker,
         "analysis_date": analysis_date,
@@ -463,6 +471,7 @@ def get_user_selections():
         "research_depth": selected_research_depth,
         "shallow_thinker": selected_shallow_thinker,
         "deep_thinker": selected_deep_thinker,
+        "fiat_currency": selected_fiat_currency,
     }
 
 
@@ -697,30 +706,61 @@ def update_research_team_status(status):
         message_buffer.update_agent_status(agent, status)
 
 
-def get_summary_table(ticker: str, portfolio_usd: float = 200.0):
+def select_fiat_currency():
+    """Prompt user to select fiat currency (USD or IDR)."""
+    options = ["USD", "IDR"]
+    default = "IDR"
+    console.print("[cyan]Supported fiat currencies: USD (US Dollar), IDR (Rupiah)[/cyan]")
+    while True:
+        fiat = typer.prompt("Select fiat currency (USD/IDR)", default=default).upper()
+        if fiat in options:
+            return fiat
+        else:
+            console.print("[red]Invalid fiat currency. Please enter 'USD' or 'IDR'.[/red]")
+
+
+def get_summary_table(ticker: str, portfolio_usd: float = 200.0, fiat_currency: str = None):
     """
-    Generate a summary table for daily trading action for a given crypto.
+    Generate a summary trading table for the given ticker and portfolio value.
+    Now supports fiat_currency (USD or IDR).
     """
-    from datetime import datetime, timedelta
+    from cryptoagents.config import CRYPTO_CONFIG
+    fiat = fiat_currency or CRYPTO_CONFIG.get("fiat_currency", "USD")
+    currency_symbol = "$" if fiat == "USD" else "Rp"
+
     api = CoinMarketCapAPI()
     # Get current price
     quote = api.get_latest_quote([ticker])
     try:
-        price = float(
-            quote['data'][str(api.get_crypto_id(ticker))]['quote']['USD']['price']
-        )
+        if fiat == "IDR":
+            price = float(
+                quote['data'][str(api.get_crypto_id(ticker))]['quote']['IDR']['price']
+            )
+        else:
+            price = float(
+                quote['data'][str(api.get_crypto_id(ticker))]['quote']['USD']['price']
+            )
     except Exception:
         price = None
     # Example logic for buy/sell/hold (can be improved with more signals)
     # For now, use a simple placeholder logic
     buy_price = price * 0.9 if price else None
     sell_price = price * 1.1 if price else None
+
+    def fmt(val):
+        if val is None:
+            return "-"
+        if val < 1:
+            return f"{val:.8f}".rstrip("0").rstrip(".")  # up to 8 decimals, no currency symbol
+        else:
+            return f"{currency_symbol}{val:,.2f}"  # currency symbol and 2 decimals
+
     table = f"""
-| Action | Price Trigger (USD) | Amount (USD) | Condition/Note |
+| Action | Price Trigger ({fiat}) | Amount ({fiat}) | Condition/Note |
 |--------|--------------------|--------------|----------------|
-| Buy    | {buy_price:.8f}    | {portfolio_usd*0.2:.2f}   | If price dips 10% below current |
-| Sell   | {sell_price:.8f}   | {portfolio_usd*0.5:.2f}   | If price surges 10% above current |
-| Hold   | {price:.8f}        | {portfolio_usd:.2f}   | Default/No strong signal |
+| Buy    | {fmt(buy_price)}    | {currency_symbol}{portfolio_usd*0.2:,.2f}   | If price dips 10% below current |
+| Sell   | {fmt(sell_price)}   | {currency_symbol}{portfolio_usd*0.5:,.2f}   | If price surges 10% above current |
+| Hold   | {fmt(price)}        | {currency_symbol}{portfolio_usd:,.2f}   | Default/No strong signal |
 """ if price else "Price unavailable."
     return table
 
@@ -1057,7 +1097,7 @@ def run_analysis(portfolio_usd: float = 200.0):
             console.print(f"\n[red]✗ Report Generation Failed:[/red] {str(e)}")
 
         # After generating the final report, prepend the summary table (so it appears at the top)
-        summary_table = get_summary_table(selections['ticker'], portfolio_usd=portfolio_usd)
+        summary_table = get_summary_table(selections['ticker'], portfolio_usd=portfolio_usd, fiat_currency=selections.get('fiat_currency', 'USD'))
         if message_buffer.final_report:
             message_buffer.final_report = summary_table + "\n" + message_buffer.final_report
             # Write the summary table to a separate markdown file
@@ -1075,6 +1115,7 @@ def run_analysis_headless(
     research_depth=None,
     shallow_model=None,
     deep_model=None,
+    fiat_currency=None,
     progress_callback=None  # <-- allow extra kwarg for bot compatibility
 ):
     """
@@ -1140,7 +1181,7 @@ def run_analysis_headless(
     final_report = "\n\n".join(report_parts)
 
     # Generate summary table and prepend
-    summary_table = get_summary_table(ticker, portfolio_usd)
+    summary_table = get_summary_table(ticker, portfolio_usd, fiat_currency=fiat_currency)
     final_report_with_summary = summary_table + "\n" + final_report
 
     # Write summary to markdown
@@ -1174,9 +1215,14 @@ def main():
 
 
 @app.command()
-def analyze(portfolio_usd: float = typer.Option(200.0, help="Portfolio value in USD for trading recommendations.")):
+def analyze(
+    portfolio: float = typer.Option(
+        200.0,
+        help="Portfolio balance in selected fiat currency (e.g. 9700000 for IDR, 1000 for USD)."
+    )
+):
     """Run cryptocurrency analysis with the trading desk simulation."""
-    run_analysis(portfolio_usd=portfolio_usd)
+    run_analysis(portfolio_usd=portfolio)
 
 
 if __name__ == "__main__":

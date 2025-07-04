@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any
 import time
 from functools import lru_cache
 import pandas as pd
+from cryptoagents.config import CRYPTO_CONFIG
 
 
 class CoinMarketCapAPI:
@@ -19,7 +20,7 @@ class CoinMarketCapAPI:
     BASE_URL = "https://pro-api.coinmarketcap.com"
     SANDBOX_URL = "https://sandbox-api.coinmarketcap.com"  # For testing
     
-    def __init__(self, api_key: Optional[str] = None, use_sandbox: bool = False):
+    def __init__(self, api_key: Optional[str] = None, use_sandbox: bool = False, fiat_currency: str = None):
         """
         Initialize CoinMarketCap API client
         
@@ -42,6 +43,8 @@ class CoinMarketCapAPI:
         # Rate limiting
         self.last_request_time = 0
         self.min_request_interval = 0.1  # 10 requests per second max
+        
+        self.fiat_currency = fiat_currency or CRYPTO_CONFIG.get("fiat_currency", "USD")
         
     def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
         """
@@ -120,7 +123,7 @@ class CoinMarketCapAPI:
         endpoint = "/v2/cryptocurrency/quotes/latest"
         params = {
             'id': ','.join(ids),
-            'convert': 'USD'
+            'convert': self.fiat_currency
         }
         
         return self._make_request(endpoint, params)
@@ -148,7 +151,7 @@ class CoinMarketCapAPI:
             'id': crypto_id,
             'time_start': start_ts,
             'time_end': end_ts,
-            'convert': 'USD',
+            'convert': self.fiat_currency,
             'interval': 'daily'
         }
         
@@ -161,14 +164,15 @@ class CoinMarketCapAPI:
         
         df_data = []
         for quote in quotes:
+            quote_fiat = quote['quote'][self.fiat_currency]
             df_data.append({
                 'Date': quote['time_open'],
-                'Open': quote['quote']['USD']['open'],
-                'High': quote['quote']['USD']['high'],
-                'Low': quote['quote']['USD']['low'],
-                'Close': quote['quote']['USD']['close'],
-                'Volume': quote['quote']['USD']['volume'],
-                'Market_Cap': quote['quote']['USD']['market_cap']
+                'Open': quote_fiat['open'],
+                'High': quote_fiat['high'],
+                'Low': quote_fiat['low'],
+                'Close': quote_fiat['close'],
+                'Volume': quote_fiat['volume'],
+                'Market_Cap': quote_fiat['market_cap']
             })
         
         df = pd.DataFrame(df_data)

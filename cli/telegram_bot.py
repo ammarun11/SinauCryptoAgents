@@ -3,6 +3,7 @@ import logging
 from telegram import Update, InputFile, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from cli.main import run_analysis_headless, AnalystType
+from cryptoagents.config import CRYPTO_CONFIG
 import datetime
 import asyncio
 
@@ -149,105 +150,65 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    if len(args) < 3:
-        await update.message.reply_text("Usage: /analyze <symbol> <portfolio_usd> <date YYYY-MM-DD> [analysts] [research_depth] [shallow_model] [deep_model]\nExample: /analyze BTC 1000 2025-07-03")
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /analyze <symbol> <portfolio> <date YYYY-MM-DD> [analysts] [research_depth] [shallow_model] [deep_model] [fiat_currency]")
         return
     symbol = args[0].upper()
     try:
-        portfolio_usd = float(args[1])
+        portfolio = float(args[1])
     except ValueError:
         await update.message.reply_text("Portfolio value must be a number.")
         return
-    analysis_date = args[2]
-    try:
-        datetime.datetime.strptime(analysis_date, "%Y-%m-%d")
-    except ValueError:
-        await update.message.reply_text("Date must be in YYYY-MM-DD format.")
-        return
-    # Import config for defaults
-    from cryptoagents.config import CRYPTO_CONFIG
-    from cli.main import AnalystType
-    default_analysts = [AnalystType.MARKET.value, AnalystType.SOCIAL.value, AnalystType.NEWS.value, AnalystType.FUNDAMENTALS.value]
-    analysts = default_analysts
-    research_depth = CRYPTO_CONFIG.get("max_debate_rounds", 1)
-    shallow_model = CRYPTO_CONFIG.get("quick_think_llm", "gpt-4o-mini")
-    deep_model = CRYPTO_CONFIG.get("deep_think_llm", "gpt-4o")
-    if len(args) > 3:
-        # Analysts as comma-separated string
-        analysts = [a.strip() for a in args[3].split(",") if a.strip()]
-    if len(args) > 4:
-        try:
-            research_depth = int(args[4])
-        except ValueError:
-            pass
-    if len(args) > 5:
-        shallow_model = args[5]
-    if len(args) > 6:
-        deep_model = args[6]
-    await update.message.reply_text(f"Running analysis for {symbol} (${portfolio_usd}, {analysis_date})... This may take a while.")
+    date = args[2] if len(args) > 2 else datetime.datetime.now().strftime("%Y-%m-%d")
+    analysts = args[3].split(",") if len(args) > 3 else [AnalystType.MARKET.value, AnalystType.SOCIAL.value, AnalystType.NEWS.value, AnalystType.FUNDAMENTALS.value]
+    research_depth = int(args[4]) if len(args) > 4 else 3
+    shallow_model = args[5] if len(args) > 5 else "gpt-4o-mini"
+    deep_model = args[6] if len(args) > 6 else "gpt-4o"
+    # Use config default for fiat_currency if not provided
+    fiat_currency = args[7] if len(args) > 7 else CRYPTO_CONFIG.get("fiat_currency", "USD")
 
-    # Progress callback for streaming updates
+    await update.message.reply_text(f"Running analysis for {symbol} ({portfolio} {fiat_currency}, {date})... This may take a while.")
+
+    progress_msgs = []
     async def send_progress(msg):
-        try:
-            await update.effective_message.reply_text(f"[Progress] {msg}")
-        except Exception:
-            pass
-    loop = asyncio.get_event_loop()
-    def progress_callback(msg):
-        loop.create_task(send_progress(msg))
+        progress_msgs.append(msg)
+        if len(progress_msgs) % 3 == 0:
+            await update.message.reply_text(f"Progress: {msg}")
 
+    loop = asyncio.get_running_loop()
     try:
-        from cli.main import run_analysis_headless
-        pdf_path, markdown_path, summary_path = run_analysis_headless(
-            ticker=symbol,
-            portfolio_usd=portfolio_usd,
-            analysis_date=analysis_date,
-            analysts=analysts,
-            research_depth=research_depth,
-            shallow_model=shallow_model,
-            deep_model=deep_model,
-            progress_callback=progress_callback
+        # run_analysis_headless is sync, so run in thread
+        pdf_path, md_path, summary_path = await asyncio.to_thread(
+            run_analysis_headless,
+            symbol,
+            portfolio,
+            date,
+            analysts,
+            research_depth,
+            shallow_model,
+            deep_model,
+            fiat_currency,
+            send_progress
         )
         await update.message.reply_text("Analysis complete! Sending reports...")
-
-        # Extract summary table and Research Team Decision from markdown report
-        summary_text = None
-        research_decision = None
-        if markdown_path:
-            with open(markdown_path, "r") as f:
-                md = f.read()
-            # Extract the first markdown table (summary table)
-            import re
-            table_match = re.search(r'(\| Action \|[\s\S]+?\| Default/No strong signal \|)', md)
-            if table_match:
-                summary_text = table_match.group(1)
-            # Extract the Research Team Decision section
-            research_match = re.search(r'(## Research Team Decision[\s\S]+?)(?:\n## |\Z)', md)
-            if research_match:
-                research_decision = research_match.group(1).strip()
-        # Send as chat message
-        if summary_text or research_decision:
-            msg = ''
-            if summary_text:
-                msg += f"{summary_text}\n\n"
-            if research_decision:
-                msg += research_decision
-            # Split and send in chunks if too long
-            max_len = 4096
-            for i in range(0, len(msg), max_len):
-                await update.message.reply_text(msg[i:i+max_len], parse_mode="Markdown")
-        # Continue sending files as before
-        if summary_path:
+        # Send summary table as text if possible
+        if summary_path and os.path.exists(summary_path):
+            with open(summary_path, "r") as f:
+                summary_text = f.read()
+            await update.message.reply_text(f"Summary Table:\n{summary_text}")
+            # Also send as document
             with open(summary_path, "rb") as f:
                 await update.message.reply_document(document=InputFile(f, filename=os.path.basename(summary_path)))
-        if markdown_path:
-            with open(markdown_path, "rb") as f:
-                await update.message.reply_document(document=InputFile(f, filename=os.path.basename(markdown_path)))
-        if pdf_path:
+        # Send markdown file
+        if md_path and os.path.exists(md_path):
+            with open(md_path, "rb") as f:
+                await update.message.reply_document(document=InputFile(f, filename=os.path.basename(md_path)))
+        # Send PDF file
+        if pdf_path and os.path.exists(pdf_path):
             with open(pdf_path, "rb") as f:
                 await update.message.reply_document(document=InputFile(f, filename=os.path.basename(pdf_path)))
     except Exception as e:
-        await update.message.reply_text(f"Error running analysis: {e}")
+        await update.message.reply_text(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
