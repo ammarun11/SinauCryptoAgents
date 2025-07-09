@@ -1106,106 +1106,150 @@ def run_analysis(portfolio_usd: float = 200.0):
                 f.write(summary_table)
         update_display(layout)
 
-
-def run_analysis_headless(
-    ticker: str,
-    portfolio_usd: float,
-    analysis_date: str,
-    analysts=None,
-    research_depth=None,
-    shallow_model=None,
-    deep_model=None,
-    fiat_currency=None,
-    progress_callback=None  # <-- allow extra kwarg for bot compatibility
-):
+def enhanced_run_analysis(portfolio_usd: float = 200.0):
     """
-    Run the full agent analysis pipeline without user prompts. Returns (pdf_path, markdown_path, summary_path).
+    Enhanced analysis: deeper market prediction, more technicals, scenario-based recommendations.
     """
-    # Use defaults if not provided
-    if analysts is None:
-        analysts = [AnalystType.MARKET, AnalystType.SOCIAL, AnalystType.NEWS, AnalystType.FUNDAMENTALS]
-    else:
-        # Accept both AnalystType and string values
-        analysts = [a if isinstance(a, AnalystType) else AnalystType(a) for a in analysts]
-    if research_depth is None:
-        research_depth = 3
-    if shallow_model is None:
-        shallow_model = CRYPTO_CONFIG["quick_think_llm"]
-    if deep_model is None:
-        deep_model = CRYPTO_CONFIG["deep_think_llm"]
-
+    selections = get_user_selections()
     config = CRYPTO_CONFIG.copy()
-    config["max_debate_rounds"] = research_depth
-    config["max_risk_discuss_rounds"] = research_depth
-    config["quick_think_llm"] = shallow_model
-    config["deep_think_llm"] = deep_model
+    config["max_debate_rounds"] = selections["research_depth"] + 2  # Deeper debate
+    config["max_risk_discuss_rounds"] = selections["research_depth"] + 2
+    config["quick_think_llm"] = selections["shallow_thinker"]
+    config["deep_think_llm"] = selections["deep_thinker"]
 
+    # Fetch extended historical data and technicals
+    api = CoinMarketCapAPI(fiat_currency=selections.get("fiat_currency", "USD"))
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    hist_start = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime("%Y-%m-%d")
+    hist_df = api.get_historical_quotes(selections["ticker"], hist_start, today)
+    price_trend = ""
+    if not hist_df.empty:
+        last_close = hist_df["Close"].iloc[-1]
+        first_close = hist_df["Close"].iloc[0]
+        pct_change = ((last_close - first_close) / first_close) * 100
+        price_trend = f"6-month trend: {first_close:.4f} → {last_close:.4f} ({pct_change:+.2f}%)"
+    else:
+        price_trend = "Historical data unavailable."
+
+    # Run the multi-agent graph as before, but aggregate more signals
     graph = TradingAgentsGraph(
-        [analyst.value for analyst in analysts], config=config, debug=False
+        [analyst.value for analyst in selections["analysts"]], config=config, debug=True
     )
+    layout = create_layout()
+    with Live(layout, refresh_per_second=4) as live:
+        update_display(layout)
+        message_buffer.add_message("System", f"Selected ticker: {selections['ticker']}")
+        message_buffer.add_message("System", f"Analysis date: {selections['analysis_date']}")
+        message_buffer.add_message("System", f"Selected analysts: {', '.join(analyst.value for analyst in selections['analysts'])}")
+        message_buffer.add_message("System", f"[bold yellow]{price_trend}[/bold yellow]")
+        update_display(layout)
 
-    # Initialize state and get graph args
-    init_agent_state = graph.propagator.create_initial_state(ticker, analysis_date)
-    args = graph.propagator.get_graph_args()
+        for agent in message_buffer.agent_status:
+            message_buffer.update_agent_status(agent, "pending")
+        for section in message_buffer.report_sections:
+            message_buffer.report_sections[section] = None
+        message_buffer.current_report = None
+        message_buffer.final_report = None
 
-    trace = []
-    for chunk in graph.graph.stream(init_agent_state, **args):
-        trace.append(chunk)
-        if progress_callback:
-            # Optionally call the callback with a simple progress message
-            agent = chunk.get('current_agent') or chunk.get('agent')
-            step = chunk.get('step') or chunk.get('stage')
-            msg = f"Step: {step or ''} | Agent: {agent or ''}"
-            progress_callback(msg)
-    if not trace:
-        raise RuntimeError("No analysis trace generated.")
-    final_state = trace[-1]
-    decision = graph.process_signal(final_state["final_trade_decision"])
-
-    # Build the final report
-    report_parts = []
-    if final_state.get("market_report"):
-        report_parts.append(f"### Crypto Market Analysis\n{final_state['market_report']}")
-    if final_state.get("sentiment_report"):
-        report_parts.append(f"### Crypto Social Sentiment\n{final_state['sentiment_report']}")
-    if final_state.get("news_report"):
-        report_parts.append(f"### Crypto News Analysis\n{final_state['news_report']}")
-    if final_state.get("fundamentals_report"):
-        report_parts.append(f"### Crypto Fundamentals Analysis\n{final_state['fundamentals_report']}")
-    if final_state.get("investment_plan"):
-        report_parts.append(f"## Research Team Decision\n{final_state['investment_plan']}")
-    if final_state.get("trader_investment_plan"):
-        report_parts.append(f"## Trading Team Plan\n{final_state['trader_investment_plan']}")
-    if final_state.get("final_trade_decision"):
-        report_parts.append(f"## Portfolio Management Decision\n{final_state['final_trade_decision']}")
-    final_report = "\n\n".join(report_parts)
-
-    # Generate summary table and prepend
-    summary_table = get_summary_table(ticker, portfolio_usd, fiat_currency=fiat_currency)
-    final_report_with_summary = summary_table + "\n" + final_report
-
-    # Write summary to markdown
-    summary_filename = f"reports/{ticker.upper()}_{analysis_date}_summary.md"
-    os.makedirs("reports", exist_ok=True)
-    with open(summary_filename, "w") as f:
-        f.write(summary_table)
-
-    # Write full report to markdown
-    markdown_filename = f"reports/{ticker.upper()}_{analysis_date}_report.md"
-    with open(markdown_filename, "w") as f:
-        f.write(final_report_with_summary)
-
-    # Optionally generate PDF (if function available)
-    try:
-        pdf_path, _ = generate_trading_report_pdf(
-            crypto_symbol=ticker,
-            analysis_date=analysis_date,
-            final_report=final_report_with_summary
+        first_analyst = f"Crypto {selections['analysts'][0].value.capitalize()} Analyst"
+        message_buffer.update_agent_status(first_analyst, "in_progress")
+        update_display(layout)
+        spinner_text = (
+            f"Enhanced analysis for {selections['ticker']} on {selections['analysis_date']}..."
         )
-    except Exception:
-        pdf_path = None
+        update_display(layout, spinner_text)
 
-    return pdf_path, markdown_filename, summary_filename
+        init_agent_state = graph.propagator.create_initial_state(
+            selections["ticker"], selections["analysis_date"]
+        )
+        args = graph.propagator.get_graph_args()
+
+        trace = []
+        for chunk in graph.graph.stream(init_agent_state, **args):
+            if len(chunk["messages"]) > 0:
+                last_message = chunk["messages"][-1]
+                if hasattr(last_message, "content"):
+                    content = last_message.content
+                    msg_type = "Reasoning"
+                else:
+                    content = str(last_message)
+                    msg_type = "System"
+                message_buffer.add_message(msg_type, content)
+                if hasattr(last_message, "tool_calls"):
+                    for tool_call in last_message.tool_calls:
+                        if isinstance(tool_call, dict):
+                            message_buffer.add_tool_call(tool_call["name"], tool_call["args"])
+                        else:
+                            message_buffer.add_tool_call(tool_call.name, tool_call.args)
+            # Update reports and agent status as before
+            for section in ["market_report", "sentiment_report", "news_report", "fundamentals_report"]:
+                if section in chunk and chunk[section]:
+                    message_buffer.update_report_section(section, chunk[section])
+            trace.append(chunk)
+            update_display(layout)
+
+        # Aggregate agent outputs for actionable insights
+        final_state = trace[-1]
+        scenario = "Unknown"
+        confidence = "Medium"
+        if final_state.get("market_report"):
+            if "bull" in final_state["market_report"].lower():
+                scenario = "Bullish"
+            elif "bear" in final_state["market_report"].lower():
+                scenario = "Bearish"
+            elif "sideways" in final_state["market_report"].lower():
+                scenario = "Sideways"
+        # Confidence scoring (simple example: more agent agreement = higher confidence)
+        agent_signals = []
+        for section in ["market_report", "sentiment_report", "news_report", "fundamentals_report"]:
+            if final_state.get(section):
+                if "buy" in final_state[section].lower():
+                    agent_signals.append("BUY")
+                elif "sell" in final_state[section].lower():
+                    agent_signals.append("SELL")
+                elif "hold" in final_state[section].lower():
+                    agent_signals.append("HOLD")
+        if agent_signals:
+            from collections import Counter
+            counts = Counter(agent_signals)
+            top_signal, top_count = counts.most_common(1)[0]
+            confidence = f"{(top_count/len(agent_signals))*100:.0f}%"
+        else:
+            top_signal = "HOLD"
+            confidence = "Low"
+
+        # Display scenario and actionable summary
+        summary = (
+            f"[bold green]Scenario:[/bold green] {scenario}\n"
+            f"[bold green]Consensus Signal:[/bold green] {top_signal}\n"
+            f"[bold green]Confidence:[/bold green] {confidence}\n"
+            f"[bold yellow]{price_trend}[/bold yellow]\n"
+        )
+        message_buffer.add_message("Summary", summary)
+        update_display(layout)
+
+        # Show final report as before
+        display_complete_report(final_state)
+        update_display(layout)
+
+        # Save reports as before
+        try:
+            if message_buffer.final_report:
+                pdf_path, markdown_path = generate_trading_report_pdf(
+                    crypto_symbol=selections['ticker'],
+                    analysis_date=selections['analysis_date'],
+                    final_report=message_buffer.final_report
+                )
+                message_buffer.add_message("System", f"Reports saved - PDF: {pdf_path}, MD: {markdown_path}")
+                console.print(f"\n[bold green]✓ Reports Generated:[/bold green]")
+                console.print(f"  PDF: {pdf_path}")
+                console.print(f"  Markdown: {markdown_path}")
+            else:
+                console.print("\n[yellow]⚠ No final report available for report generation[/yellow]")
+        except Exception as e:
+            message_buffer.add_message("Error", f"Report generation failed: {str(e)}")
+            console.print(f"\n[red]✗ Report Generation Failed:[/red] {str(e)}")
+
 
 
 @app.callback()
@@ -1219,10 +1263,17 @@ def analyze(
     portfolio: float = typer.Option(
         200.0,
         help="Portfolio balance in selected fiat currency (e.g. 9700000 for IDR, 1000 for USD)."
+    ),
+    enhanced: bool = typer.Option(
+        False,
+        help="Use enhanced analysis with deeper market prediction and scenario-based recommendations."
     )
 ):
     """Run cryptocurrency analysis with the trading desk simulation."""
-    run_analysis(portfolio_usd=portfolio)
+    if enhanced:
+        enhanced_run_analysis(portfolio_usd=portfolio)
+    else:
+        run_analysis(portfolio_usd=portfolio)
 
 
 if __name__ == "__main__":
